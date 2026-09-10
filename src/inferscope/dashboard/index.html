@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>inferscope</title>
+<style>
+:root {
+  --bg: #fbfbfa; --panel: #ffffff; --line: #e4e2dd; --ink: #23211d;
+  --muted: #6f6a61; --grid: #edebe6;
+  --queued: #b08b3f; --prefill: #7a6ba8; --wait: #c2593f; --decode: #4a7f6b;
+  --stall: #b23a48; --requeue: #8a7d6b;
+  --accent: #2f6f5e; --warn: #b23a48;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17161a; --panel: #201f24; --line: #33313a; --ink: #eceaf0;
+    --muted: #9a95a5; --grid: #2a2830;
+    --queued: #d9b36a; --prefill: #a496d4; --wait: #e08163; --decode: #6fb499;
+    --stall: #e4677a; --requeue: #b0a795;
+    --accent: #6fb499; --warn: #e4677a;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  padding: 24px; max-width: 1180px; margin-inline: auto;
+}
+h1 { font-size: 17px; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+     color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 18px; }
+header .sub { color: var(--muted); font-size: 13px; }
+.panel { background: var(--panel); border: 1px solid var(--line);
+         border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
+.diagnosis { border-left: 3px solid var(--accent); }
+.diagnosis.bad { border-left-color: var(--warn); }
+.pathology { font-size: 16px; font-weight: 650; margin-bottom: 4px; }
+.pathology.bad { color: var(--warn); }
+.evidence { list-style: none; padding: 0; margin: 12px 0 0;
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 6px; }
+.evidence li { color: var(--muted); font-size: 13px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }
+.tile .v { font-size: 20px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.tile .k { font-size: 11px; color: var(--muted); text-transform: uppercase;
+           letter-spacing: 0.06em; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 780px) { .grid2 { grid-template-columns: 1fr; } }
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th { text-align: right; font-size: 11px; text-transform: uppercase; color: var(--muted);
+     letter-spacing: 0.05em; font-weight: 600; padding: 0 8px 8px; border-bottom: 1px solid var(--line); }
+th:first-child, td:first-child { text-align: left; }
+td { padding: 7px 8px; border-bottom: 1px solid var(--grid); font-size: 13px; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--grid); }
+.bar { display: flex; height: 9px; border-radius: 3px; overflow: hidden; min-width: 130px; }
+.bar span { display: block; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted);
+          margin-top: 10px; }
+.legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block;
+            margin-right: 5px; vertical-align: baseline; }
+.scroll { overflow-x: auto; }
+#detail { display: none; }
+#detail.on { display: block; }
+.muted { color: var(--muted); }
+.err { color: var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>inferscope</h1>
+  <span class="sub" id="sub">loading…</span>
+</header>
+
+<div class="panel diagnosis" id="diagnosis"></div>
+
+<div class="panel">
+  <h2>Engine</h2>
+  <div class="tiles" id="tiles"></div>
+</div>
+
+<div class="panel">
+  <h2>Timeline</h2>
+  <div id="timeline"></div>
+  <div class="legend">
+    <span><i style="background:var(--decode)"></i>decode batch size</span>
+    <span><i style="background:var(--prefill)"></i>prefill tokens</span>
+    <span><i style="background:var(--queued)"></i>KV occupancy</span>
+    <span><i style="background:var(--stall)"></i>stalls</span>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="panel"><h2>TTFT distribution</h2><div id="ttft"></div></div>
+  <div class="panel"><h2>TPOT distribution</h2><div id="tpot"></div></div>
+</div>
+
+<div class="panel">
+  <h2>Slowest requests</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>request</th><th>total</th><th>ttft</th><th>tpot</th>
+        <th>tokens</th><th>preempt</th><th style="text-align:left">where the time went</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div class="legend">
+    <span><i style="background:var(--queued)"></i>queued</span>
+    <span><i style="background:var(--prefill)"></i>prefill</span>
+    <span><i style="background:var(--wait)"></i>decode_wait</span>
+    <span><i style="background:var(--decode)"></i>decoding</span>
+    <span><i style="background:var(--stall)"></i>stalled</span>
+    <span><i style="background:var(--requeue)"></i>requeued</span>
+  </div>
+</div>
+
+<div class="panel" id="detail"></div>
+
+<script>
+const PARTS = ["queued","prefill","decode_wait","decoding","stalled","requeued"];
+const VAR = {queued:"--queued", prefill:"--prefill", decode_wait:"--wait",
+             decoding:"--decode", stalled:"--stall", requeued:"--requeue"};
+const cv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmt = (v, d=1) => v.toFixed(d);
+const el = (t, a={}, kids=[]) => {
+  const n = document.createElementNS("http://www.w3.org/2000/svg", t);
+  for (const [k,v] of Object.entries(a)) n.setAttribute(k, v);
+  for (const c of kids) n.appendChild(c);
+  return n;
+};
+
+function axisLabel(x, y, text, anchor="middle") {
+  const t = el("text", {x, y, "text-anchor": anchor, "font-size": 10, fill: cv("--muted")});
+  t.textContent = text;
+  return t;
+}
+
+function timelineChart(tl) {
+  const W = 1100, H = 190, P = {l: 34, r: 34, t: 10, b: 22};
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  const n = tl.t.length;
+  if (!n) return el("svg");
+  const maxB = Math.max(1, ...tl.batch);
+  const maxP = Math.max(1, ...tl.prefill_tokens);
+  const kids = [];
+
+  for (let i = 0; i <= 4; i++) {
+    const y = P.t + ih * i / 4;
+    kids.push(el("line", {x1: P.l, x2: W - P.r, y1: y, y2: y, stroke: cv("--grid")}));
+  }
+  // prefill tokens as bars
+  const bw = iw / n;
+  tl.prefill_tokens.forEach((v, i) => {
+    if (!v) return;
+    const h = ih * v / maxP;
+    kids.push(el("rect", {x: P.l + i * bw, y: P.t + ih - h, width: Math.max(1, bw - 0.5),
+                          height: h, fill: cv("--prefill"), opacity: 0.55}));
+  });
+  // batch size + kv occupancy as lines
+  const line = (vals, scale, color, width) => {
+    const d = vals.map((v, i) =>
+      `${i ? "L" : "M"}${(P.l + i * bw + bw / 2).toFixed(1)},${(P.t + ih - ih * scale(v)).toFixed(1)}`
+    ).join("");
+    return el("path", {d, fill: "none", stroke: color, "stroke-width": width,
+                       "stroke-linejoin": "round"});
+  };
+  kids.push(line(tl.batch, v => v / maxB, cv("--decode"), 1.8));
+  kids.push(line(tl.kv, v => v, cv("--queued"), 1.4));
+  // stall markers
+  tl.stalls.forEach((c, i) => {
+    if (!c) return;
+    kids.push(el("circle", {cx: P.l + i * bw + bw / 2, cy: P.t + 5,
+                            r: Math.min(4, 1.5 + c * 0.35), fill: cv("--stall"), opacity: 0.85}));
+  });
+  kids.push(axisLabel(P.l - 6, P.t + 4, String(Math.round(maxB)), "end"));
+  kids.push(axisLabel(P.l - 6, P.t + ih, "0", "end"));
+  kids.push(axisLabel(W - P.r + 6, P.t + 4, "100%", "start"));
+  kids.push(axisLabel(P.l, H - 6, "0 ms", "start"));
+  kids.push(axisLabel(W - P.r, H - 6, fmt(tl.t[n-1]) + " ms", "end"));
+  return el("svg", {viewBox: `0 0 ${W} ${H}`, role: "img"}, kids);
+}
+
+function histogram(h, color) {
+  const W = 520, H = 160, P = {l: 30, r: 12, t: 10, b: 24};
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  if (!h.counts.length) return el("svg");
+  const max = Math.max(...h.counts), bw = iw / h.counts.length, kids = [];
+  kids.push(el("line", {x1: P.l, x2: W - P.r, y1: P.t + ih, y2: P.t + ih, stroke: cv("--line")}));
+  h.counts.forEach((c, i) => {
+    if (!c) return;
+    const bh = Math.max(1, ih * c / max);
+    kids.push(el("rect", {x: P.l + i * bw, y: P.t + ih - bh, width: Math.max(1, bw - 1),
+                          height: bh, fill: color, rx: 1}));
+  });
+  kids.push(axisLabel(P.l, H - 6, fmt(h.edges[0], 2) + " ms", "start"));
+  kids.push(axisLabel(W - P.r, H - 6, fmt(h.edges[h.edges.length-1], 1) + " ms", "end"));
+  kids.push(axisLabel(P.l - 5, P.t + 8, String(max), "end"));
+  kids.push(axisLabel((P.l + W - P.r) / 2, H - 6, "log scale", "middle"));
+  return el("svg", {viewBox: `0 0 ${W} ${H}`, role: "img"}, kids);
+}
+
+function breakdownBar(parts, total) {
+  const d = document.createElement("div");
+  d.className = "bar";
+  for (const p of PARTS) {
+    const v = parts[p] || 0;
+    if (v <= 0) continue;
+    const s = document.createElement("span");
+    s.style.width = (100 * v / total) + "%";
+    s.style.background = cv(VAR[p]);
+    s.title = `${p}: ${fmt(v)} ms`;
+    d.appendChild(s);
+  }
+  return d;
+}
+
+function tile(k, v) {
+  const d = document.createElement("div");
+  d.className = "tile";
+  d.innerHTML = `<div class="v"></div><div class="k"></div>`;
+  d.querySelector(".v").textContent = v;
+  d.querySelector(".k").textContent = k;
+  return d;
+}
+
+async function showDetail(id) {
+  const box = document.getElementById("detail");
+  const r = await fetch(`/api/request/${encodeURIComponent(id)}`);
+  if (!r.ok) { box.className = ""; return; }
+  const d = await r.json();
+  const rows = Object.entries(d.components)
+    .filter(([, v]) => v > 0)
+    .map(([k, v]) => `<tr><td>${k}</td><td style="text-align:right">${fmt(v)} ms</td>
+      <td style="text-align:right">${fmt(100 * v / d.total_ms)}%</td></tr>`).join("");
+  const co = d.co_residents.map(([n, c]) => `${n} (${c})`).join(", ") || "—";
+  box.className = "on";
+  box.innerHTML = `<h2>${d.id}</h2>
+    <table style="max-width:420px">${rows}</table>
+    <p class="muted" style="margin:12px 0 4px">${d.verdict}</p>
+    <p class="muted" style="margin:0">${d.iterations} iterations, mean batch
+      ${fmt(d.mean_batch_size)} · batched with: ${co}</p>
+    <p class="muted" style="margin:4px 0 0">${d.batch_verdict}</p>`;
+  box.scrollIntoView({behavior: "smooth", block: "nearest"});
+}
+
+function render(p) {
+  document.getElementById("sub").textContent =
+    `${p.trace.requests} requests · ${p.trace.events.toLocaleString()} events · ${fmt(p.trace.span_ms)} ms`;
+
+  const dg = p.diagnosis, bad = dg.pathology !== "healthy" && dg.pathology !== "no-data";
+  const box = document.getElementById("diagnosis");
+  box.className = "panel diagnosis" + (bad ? " bad" : "");
+  box.innerHTML = `<div class="pathology${bad ? " bad" : ""}"></div>
+    <div class="muted"></div><ul class="evidence"></ul>`;
+  box.querySelector(".pathology").textContent = dg.pathology;
+  box.querySelector(".muted").textContent = dg.summary;
+  const ul = box.querySelector(".evidence");
+  (dg.evidence || []).forEach(e => {
+    const li = document.createElement("li"); li.textContent = e; ul.appendChild(li);
+  });
+
+  const w = p.window, tiles = document.getElementById("tiles");
+  tiles.replaceChildren(
+    tile("iterations", w.iterations),
+    tile("mean batch", fmt(w.mean_batch_size) + " / " + w.max_batch_size),
+    tile("kv peak", Math.round(w.peak_kv_occupancy * 100) + "%"),
+    tile("goodput", Math.round(w.goodput_ratio * 100) + "%"),
+    tile("preemptions", w.preemptions),
+    tile("ttft p99", dg.ttft_p99_ms != null ? fmt(dg.ttft_p99_ms) + " ms" : "—"),
+    tile("tpot p50", dg.tpot_p50_ms != null ? fmt(dg.tpot_p50_ms, 2) + " ms" : "—"),
+    tile("worst step", dg.tpot_max_ms != null ? fmt(dg.tpot_max_ms) + " ms" : "—"),
+  );
+
+  document.getElementById("timeline").replaceChildren(timelineChart(p.timeline));
+  document.getElementById("ttft").replaceChildren(histogram(p.ttft, cv("--prefill")));
+  document.getElementById("tpot").replaceChildren(histogram(p.tpot, cv("--decode")));
+
+  const tb = document.getElementById("rows");
+  tb.replaceChildren();
+  for (const r of p.requests) {
+    const tr = document.createElement("tr");
+    tr.onclick = () => showDetail(r.id);
+    const cells = [r.id, fmt(r.total_ms), fmt(r.ttft_ms), fmt(r.tpot_mean_ms, 2),
+                   `${r.prompt_tokens}/${r.output_tokens}`, r.preemptions || ""];
+    cells.forEach((c, i) => {
+      const td = document.createElement("td");
+      if (i) td.style.textAlign = "right";
+      td.textContent = c;
+      tr.appendChild(td);
+    });
+    const td = document.createElement("td");
+    td.appendChild(breakdownBar(r.parts, r.total_ms));
+    tr.appendChild(td);
+    tb.appendChild(tr);
+  }
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/payload");
+    if (!r.ok) throw new Error(await r.text());
+    render(await r.json());
+  } catch (e) {
+    document.getElementById("sub").innerHTML = `<span class="err">${e.message}</span>`;
+  }
+}
+tick();
+setInterval(tick, 2000);
+</script>
+</body>
+</html>
